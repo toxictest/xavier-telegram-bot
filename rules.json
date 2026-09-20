@@ -1,0 +1,14 @@
+[
+  {
+    "match": "^(hi|hello|hey|namaste|hii+|hlo)$",
+    "reply": "Hello! 👋 Kya help chahiye?"
+  },
+  {
+    "match": "price|daam|kitna (hai|cost)",
+    "reply": "Price abhi check kar raha hoon — thodi der me exact update dunga. 🙂"
+  },
+  {
+    "match": "^thank(s)?\\b",
+    "reply": "Koi baat nahi! 🙌 Aur kuch chahiye toh bata dena."
+  }
+]
