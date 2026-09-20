@@ -17,7 +17,7 @@ import signal
 from aiohttp import web
 from telegram import Update
 
-from bot import build_app, log
+from bot import build_app, log, OWNER_ID, ai_complete
 
 PORT = int(os.getenv("PORT", "10000"))
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "xavier-tg-webhook-2026")
@@ -52,9 +52,25 @@ async def main():
             return web.Response(status=500, text="error")
         return web.Response(text="ok")
 
+    async def morning_brief(request):
+        # cron-job.org yahan daily hit karta hai (token check)
+        if request.query.get("token") != WEBHOOK_SECRET:
+            return web.Response(status=403, text="forbidden")
+        try:
+            from brief import generate_brief
+            text = await generate_brief(ai_complete)
+            if OWNER_ID:
+                await tg_app.bot.send_message(chat_id=OWNER_ID, text=text[:4000])
+                return web.Response(text="brief sent to owner")
+            return web.Response(text=text[:200])
+        except Exception as e:
+            log.exception("morning brief fail")
+            return web.Response(text=f"error: {e}", status=500)
+
     app = web.Application()
     app.router.add_get("/", health)
     app.router.add_get("/health", health)
+    app.router.add_get("/morning-brief", morning_brief)
     app.router.add_post("/webhook", webhook)
 
     runner = web.AppRunner(app)
