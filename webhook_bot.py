@@ -13,7 +13,10 @@ import asyncio
 import logging
 import os
 import signal
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
+import httpx
 from aiohttp import web
 from telegram import Update
 
@@ -22,6 +25,51 @@ from bot import build_app, log, OWNER_ID, ai_complete
 PORT = int(os.getenv("PORT", "10000"))
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "xavier-tg-webhook-2026")
 HOST = os.getenv("RENDER_EXTERNAL_HOSTNAME", "").strip()  # Render ye auto-set karta hai
+SOCIAL_BOT_URL = os.getenv("SOCIAL_BOT_URL", "").strip()
+TASK_SECRET = os.getenv("TASK_SECRET", "xavier-sm-task-2026")
+IST = ZoneInfo("Asia/Kolkata")
+
+
+async def social_task(name):
+    if not SOCIAL_BOT_URL:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=300) as c:
+            r = await c.get(f"{SOCIAL_BOT_URL}/task", params={"name": name, "token": TASK_SECRET})
+            log.info("social task %s -> %s %s", name, r.status_code, r.text[:80])
+    except Exception:
+        log.exception("social task fail: %s", name)
+
+
+async def scheduler_loop(tg_app):
+    """Daily brief (8 AM IST) + social media tasks yahan se trigger hote hain."""
+    await asyncio.sleep(20)
+    last = {}
+    while True:
+        try:
+            now = datetime.now(IST)
+            day = now.strftime("%Y-%m-%d")
+            if now.hour == 8 and now.minute < 45 and last.get("brief") != day:
+                last["brief"] = day
+                try:
+                    from brief import generate_brief
+                    text = await generate_brief(ai_complete)
+                    await tg_app.bot.send_message(chat_id=OWNER_ID, text=text[:4000])
+                    log.info("daily 8AM brief sent")
+                except Exception:
+                    log.exception("daily brief fail")
+                await social_task("morning")
+            elif now.hour == 18 and now.minute < 45 and last.get("evening") != day:
+                last["evening"] = day
+                await social_task("evening")
+            elif 7 <= now.hour < 23 and now.minute % 30 == 0 and last.get(
+                "comments"
+            ) != f"{day}-{now.hour}-{now.minute // 30}":
+                last["comments"] = f"{day}-{now.hour}-{now.minute // 30}"
+                await social_task("comments")
+        except Exception:
+            log.exception("scheduler error")
+        await asyncio.sleep(30)
 
 
 async def make_tg_app():
@@ -100,6 +148,9 @@ async def main():
             loop.add_signal_handler(sig, stop.set)
         except NotImplementedError:
             pass
+    if SOCIAL_BOT_URL:
+        loop.create_task(scheduler_loop(tg_app))
+        log.info("Scheduler active (8AM brief + social tasks)")
     await stop.wait()
 
     log.info("Shutting down gracefully...")
