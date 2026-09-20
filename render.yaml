@@ -6,3 +6,12 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: python webhook_bot.py
     healthCheckPath: /health
+
+  - type: web
+    name: xavier-whatsapp-bot
+    runtime: node
+    plan: free
+    rootDirectory: wa
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
