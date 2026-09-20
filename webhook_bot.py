@@ -13,6 +13,7 @@ import asyncio
 import logging
 import os
 import signal
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -72,6 +73,53 @@ async def scheduler_loop(tg_app):
         await asyncio.sleep(30)
 
 
+async def video_forward(tg_app, msg):
+    """User ne video bheji → social bot /upload → YouTube pe auto-upload."""
+    fpath = f"/tmp/sm-up-{int(time.time())}.mp4"
+    try:
+        await tg_app.bot.send_message(
+            chat_id=OWNER_ID, text="🎥 Video mil gayi! YouTube pe upload kar raha hoon (1-3 min)..."
+        )
+        vf = await tg_app.bot.get_file(msg.video.file_id)
+        await vf.download_to_drive(custom_path=fpath)
+        title = (msg.video.file_name or "Xavier video")[:100]
+        for ext in (".mp4", ".mov", ".avi", ".mkv"):
+            if title.lower().endswith(ext):
+                title = title[: -len(ext)]
+        async with httpx.AsyncClient(timeout=None) as c:
+            with open(fpath, "rb") as f:
+                r = await c.post(
+                    f"{SOCIAL_BOT_URL}/upload",
+                    params={"token": TASK_SECRET},
+                    files={"file": (os.path.basename(fpath), f, msg.video.mime_type or "video/mp4")},
+                )
+            if r.status_code != 200:
+                await tg_app.bot.send_message(
+                    chat_id=OWNER_ID, text=f"⚠️ Video upload fail: {r.text[:200]}"
+                )
+                return
+            data = r.json()
+            r2 = await c.get(
+                f"{SOCIAL_BOT_URL}/task",
+                params={
+                    "name": "video",
+                    "file": data["file"],
+                    "title": title,
+                    "token": TASK_SECRET,
+                },
+            )
+            await tg_app.bot.send_message(
+                chat_id=OWNER_ID, text=f"📺 YouTube video status: {r2.text[:300]}"
+            )
+    except Exception:
+        log.exception("video forward fail")
+    finally:
+        try:
+            os.remove(fpath)
+        except Exception:
+            pass
+
+
 async def make_tg_app():
     tg_app = build_app()
     await tg_app.initialize()
@@ -94,6 +142,9 @@ async def main():
         try:
             data = await request.json()
             update = Update.de_json(data, tg_app.bot)
+            # Video bheji ho toh YouTube pe auto-upload (background me)
+            if update.message and update.message.video and SOCIAL_BOT_URL:
+                asyncio.create_task(video_forward(tg_app, update.message))
             await tg_app.process_update(update)
         except Exception:
             log.exception("Webhook update process karte waqt error")
