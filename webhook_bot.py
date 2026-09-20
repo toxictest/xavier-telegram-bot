@@ -31,12 +31,15 @@ TASK_SECRET = os.getenv("TASK_SECRET", "xavier-sm-task-2026")
 IST = ZoneInfo("Asia/Kolkata")
 
 
-async def social_task(name):
+async def social_task(name, extra=None):
     if not SOCIAL_BOT_URL:
         return
+    params = {"name": name, "token": TASK_SECRET}
+    if extra:
+        params.update(extra)
     try:
         async with httpx.AsyncClient(timeout=300) as c:
-            r = await c.get(f"{SOCIAL_BOT_URL}/task", params={"name": name, "token": TASK_SECRET})
+            r = await c.get(f"{SOCIAL_BOT_URL}/task", params=params)
             log.info("social task %s -> %s %s", name, r.status_code, r.text[:80])
     except Exception:
         log.exception("social task fail: %s", name)
@@ -63,6 +66,14 @@ async def scheduler_loop(tg_app):
             elif now.hour == 18 and now.minute < 45 and last.get("evening") != day:
                 last["evening"] = day
                 await social_task("evening")
+            elif now.weekday() == 6 and now.hour == 12 and now.minute < 45 and last.get(
+                "poll"
+            ) != day:
+                # Sunday noon: engagement poll (YT pe real poll, IG/FB pe comment-vote)
+                last["poll"] = day
+                await social_task(
+                    "poll", {"topic": "CGL preparation me abhi kaunsa topic sabse zaroori hai?"}
+                )
             elif 7 <= now.hour < 23 and now.minute % 30 == 0 and last.get(
                 "comments"
             ) != f"{day}-{now.hour}-{now.minute // 30}":
