@@ -8,6 +8,7 @@ import {
 } from '@whiskeysockets/baileys';
 import QRCode from 'qrcode';
 import fs from 'fs';
+import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -34,6 +35,8 @@ const RULES_FILE = path.join(__dirname, '..', 'rules.json');
 const QR_FILE = path.join(__dirname, 'qr.png');
 const SESSION_DIR = path.join(__dirname, 'session');
 const WA_NUMBER = (process.env.WA_NUMBER || '').replace(/[^0-9]/g, '');
+const PORT = parseInt(process.env.PORT || '10000', 10);
+let WA_CONNECTED = false;
 
 // ---------- Rules (shared with Telegram bot) ----------
 function loadRules() {
@@ -240,10 +243,12 @@ async function connect() {
       );
     }
     if (connection === 'open') {
+      WA_CONNECTED = true;
       console.log('CONNECTED as', sock.user?.id);
       try { fs.unlinkSync(QR_FILE); } catch {}
     }
     if (connection === 'close') {
+      WA_CONNECTED = false;
       const code = lastDisconnect?.error?.output?.statusCode;
       if (code === DisconnectReason.loggedOut) {
         console.log('LOGGED OUT — session reset. QR/pairing dobara karna hoga.');
@@ -299,6 +304,55 @@ async function connect() {
     }
   });
 }
+
+// ---------- HTTP server (host: health check + live QR page) ----------
+const QR_PAGE = `<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Xavier WhatsApp Bot</title>
+<style>
+body{font-family:system-ui,Arial;background:#0b141a;color:#e9edef;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;margin:0}
+img{width:min(82vw,360px);border-radius:12px;margin:14px 0;background:#fff}
+#st{font-size:18px}
+p{color:#8696a0;font-size:14px;text-align:center;padding:0 18px;line-height:1.5}
+</style></head><body>
+<h1> WhatsApp Bot</h1>
+<div id="st">⏳ check ho raha...</div>
+<img id="qr" src="/qr.png?t=0" onerror="this.style.opacity=.25">
+<p>"CONNECTED" na dikhe toh: WhatsApp → Settings → <b>Linked Devices</b> → <b>Link a Device</b> → upar wala QR scan karo. QR khud refresh hota hai.</p>
+<script>
+let i=0;
+setInterval(()=>{document.getElementById('qr').src='/qr.png?t='+(++i)},8000);
+setInterval(async()=>{try{const s=await fetch('/status').then(r=>r.json());
+document.getElementById('st').textContent=s.connected?'✅ CONNECTED — bot 24/7 live hai':'⏳ QR scan karo (upar)';
+}catch(e){}},5000);
+</script>
+</body></html>`;
+
+http
+  .createServer((req, res) => {
+    if (req.url.startsWith('/qr.png')) {
+      fs.readFile(QR_FILE, (err, data) => {
+        if (err) {
+          res.writeHead(404, { 'Content-Type': 'text/plain' });
+          res.end('QR abhi ready nahi');
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' });
+        res.end(data);
+      });
+    } else if (req.url.startsWith('/status')) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ connected: WA_CONNECTED }));
+    } else if (req.url.startsWith('/health')) {
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end('wa-bot alive');
+    } else {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(QR_PAGE);
+    }
+  })
+  .listen(PORT, '0.0.0.0', () => console.log('HTTP server on :' + PORT));
 
 connect();
 console.log('WhatsApp bot starting... (QR bane pe terminal me "QR READY" aayega)');
