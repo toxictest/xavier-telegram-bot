@@ -126,34 +126,40 @@ def default_reply():
 
 
 # ---------------- AI reply ----------------
-async def _ai_openai_compat(hist):
-    resp = await _client.chat.completions.create(
-        model=MODEL,
-        messages=[{"role": "system", "content": SYSTEM_PROMPT}] + hist[-MAX_HIST:],
-        max_tokens=300,
-        temperature=0.6,
-    )
-    return (resp.choices[0].message.content or "").strip()
-
-
-async def _ai_gemini(hist):
-    contents = [
-        {"role": "user" if m["role"] == "user" else "model",
-         "parts": [{"text": m["content"]}]}
-        for m in hist[-MAX_HIST:]
-    ]
-    r = await _http.post(
-        f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent",
-        params={"key": GEMINI_API_KEY},
-        json={
-            "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+async def ai_complete(messages, max_tokens=300, temperature=0.6):
+    """Generic AI call — OpenAI-compatible (Groq/OpenAI) ya Gemini REST. messages = [{role, content}]"""
+    if _client is not None:
+        resp = await _client.chat.completions.create(
+            model=MODEL,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        return (resp.choices[0].message.content or "").strip()
+    if _http is not None:
+        system = next((m["content"] for m in messages if m["role"] == "system"), None)
+        contents = [
+            {"role": "user" if m["role"] == "user" else "model",
+             "parts": [{"text": m["content"]}]}
+            for m in messages if m["role"] != "system"
+        ]
+        payload = {
             "contents": contents,
-            "generationConfig": {"maxOutputTokens": 300, "temperature": 0.6},
-        },
-    )
-    r.raise_for_status()
-    data = r.json()
-    return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            "generationConfig": {
+                "maxOutputTokens": max_tokens,
+                "temperature": temperature,
+            },
+        }
+        if system:
+            payload["system_instruction"] = {"parts": [{"text": system}]}
+        r = await _http.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent",
+            params={"key": GEMINI_API_KEY},
+            json=payload,
+        )
+        r.raise_for_status()
+        return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+    return None
 
 
 async def ai_reply(chat_id, text):
@@ -161,10 +167,10 @@ async def ai_reply(chat_id, text):
     hist.append({"role": "user", "content": text})
     out = None
     try:
-        if _client is not None:
-            out = await _ai_openai_compat(hist)
-        elif _http is not None:
-            out = await _ai_gemini(hist)
+        out = await ai_complete(
+            [{"role": "system", "content": SYSTEM_PROMPT}] + hist[-MAX_HIST:],
+            max_tokens=300,
+        )
     except Exception as e:
         log.exception("AI call failed")
         out = f"⚠️ AI reply fail ho gaya: {e}"
@@ -197,6 +203,7 @@ async def cmd_help(update: Update, context):
         "📌 Commands:\n"
         "/start — intro\n"
         "/id — apna Telegram ID dekho (OWNER_ID ke liye)\n"
+        "/brief — CGL morning brief abhi banao 📰\n"
         "/rules — saari rules dikhao\n"
         "/setrule <keyword> <reply> — nayi rule add karo\n"
         "/delrule <keyword> — rule hatao\n\n"
@@ -255,6 +262,20 @@ async def cmd_delrule(update: Update, context):
     await update.message.reply_text(f"🗑️ Rule hatayi: {keyword}")
 
 
+async def cmd_brief(update: Update, context):
+    if not is_owner(update):
+        await update.message.reply_text("❌ Sirf owner.")
+        return
+    await update.message.reply_text("📰 Brief bana raha hoon... (30-60 sec)")
+    try:
+        from brief import generate_brief
+        text = await generate_brief(ai_complete)
+        await update.message.reply_text(text[:4000])
+    except Exception as e:
+        log.exception("brief fail")
+        await update.message.reply_text(f"⚠️ Brief fail ho gaya: {e}")
+
+
 async def on_message(update: Update, context):
     msg = update.message
     if not msg or not msg.text:
@@ -309,6 +330,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("id", cmd_id))
+    app.add_handler(CommandHandler("brief", cmd_brief))
     app.add_handler(CommandHandler("rules", cmd_rules))
     app.add_handler(CommandHandler("setrule", cmd_setrule))
     app.add_handler(CommandHandler("delrule", cmd_delrule))
